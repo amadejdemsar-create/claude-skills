@@ -1,0 +1,63 @@
+name: video-watch install test
+
+on:
+  push:
+    paths:
+      - "video-watch/**"
+      - ".github/workflows/video-watch-install.yml"
+  workflow_dispatch:
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install into a fresh home directory
+        run: bash video-watch/install-video-watch.sh
+
+      - name: Make a short spoken test video
+        run: |
+          export PATH="$PATH:$HOME/.local/bin"
+          if [ -n "${LOCALAPPDATA:-}" ]; then
+            export PATH="$PATH:$(cygpath -u "$LOCALAPPDATA")/Microsoft/WinGet/Links"
+            powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech; \$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \$s.SetOutputToWaveFile('speech.wav'); \$s.Speak('Hello, this is a test of the video watch skill. The elephants have very long trunks.'); \$s.Dispose()"
+          else
+            say -o speech.aiff "Hello, this is a test of the video watch skill. The elephants have very long trunks."
+            ffmpeg -y -loglevel error -i speech.aiff speech.wav
+          fi
+          ffmpeg -y -loglevel error -f lavfi -i testsrc=size=640x360:rate=25 -i speech.wav -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac test.mp4
+          ls -la test.mp4
+
+      - name: Watch the local video (local faster-whisper path)
+        run: |
+          bash "$HOME/.claude/skills/video-watch/run.sh" test.mp4 --max-frames 3 | tee local-report.md
+          grep -qi "trunks" local-report.md
+
+      - name: Watch a YouTube video (captions path)
+        continue-on-error: true
+        run: bash "$HOME/.claude/skills/video-watch/run.sh" "https://www.youtube.com/watch?v=jNQXAC9IVRw" --max-frames 3 | tee youtube-report.md
+
+      - name: Collect frames and reports
+        if: always()
+        run: |
+          mkdir -p out
+          cp -f *-report.md out/ 2>/dev/null || true
+          for d in $(grep -ho 'Work dir: `[^`]*`' *-report.md 2>/dev/null | sed 's/Work dir: `//; s/`$//'); do
+            [ -n "${LOCALAPPDATA:-}" ] && d="$(cygpath -u "$d")"
+            cp -r "$d/frames" "out/frames-$(basename "$d")" 2>/dev/null || true
+          done
+          ls -R out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: video-watch-${{ matrix.os }}
+          path: out
